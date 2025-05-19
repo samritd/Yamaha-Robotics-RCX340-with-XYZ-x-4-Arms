@@ -1,0 +1,2269 @@
+[PGM]
+NAME=_SEQUENCE
+PGN=1
+'
+NAME=COMMON
+PGN=2
+'-----------------------------------------------------------------------------------
+' File: COMMON.pmg
+' Purpose: Defines shared variables and subroutines for task execution and coordination of a 4-robot system.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 20, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+' Variable Definitions: Purpose and Usage
+' +-----------------+---------------------------------------+-------------------------------------------+
+' | Variable        | Description                           | Purpose                                   |
+' +-----------------+---------------------------------------+-------------------------------------------+
+' | tLIdx%          | Int array: Task iteration index       | Tracks task iteration for each robot      |
+' | rTIdx%          | Int array: Pos in task list           | Tracks current task position for robot    |
+' | mSet%           | Int array: [0]=AUTO sp, [1]=PGM. sp   | Stores acceleration/speed settings        |
+' | zPos            | Real array: Z levels (mm)             | Defines Z-axis positions for movements    |
+' | rPData%         | Int array: Task def: [robot][0]       | Stores task count and data for robot      |
+' | stPts%          | Int array: Pt IDs: [robot][0]         | Stores point ID for stamp tasks           |
+' | l1Pts%          | Int array: Pt IDs: [robot][idx]       | Stores start/end point IDs for line tasks |
+' | rCTStart%       | Int array: Cycle start time (s)       | Records cycle start time for robot        |
+' | rCTEnd%         | Int array: Cycle end time (s)         | Records cycle end time for robot          |
+' | rCTTotal%       | Int array: Total cycle time (s)       | Calculates total cycle time for robot     |
+' | aPts%           | Int array: Pt IDs: [robot][idx]       | Stores point IDs for arc tasks            |
+' | cPts%           | Int array: Pt IDs: [robot][idx]       | Stores point IDs for circle tasks         |
+' | l2Pts%          | Int array: Pt IDs: [robot][idx]       | Stores point IDs for 2-line tasks         |
+' | l6Pts%          | Int array: Pt IDs: [robot][idx]       | Stores point IDs for 6-line tasks         |
+' | rId%            | Int: Robot number (1-4)               | Identifies robot in subroutines           |
+' | dir%            | Int: Cylinder direction (0=down, 1=up)| Specifies cylinder direction              |
+' | pId%            | Int: Target point ID                  | Specifies target point for stamp tasks    |
+' | sPt%            | Int: Start point ID                   | Specifies start point for line/arc tasks  |
+' | ePt%            | Int: End point ID                     | Specifies end point for line tasks        |
+' | mPt%            | Int: Mid point ID                     | Specifies mid point for arc tasks         |
+' | pt1%,pt2%,etc.  | Int: Point IDs                        | Specifies points for circle/2-line/6-line |
+' | idx%            | Int: Loop index                       | Iteration index for line drawing          |
+' | tId%            | Int: Task number (2-5, 0 for sys)     | Identifies task in error handling         |
+' +-----------------+---------------------------------------+-------------------------------------------+
+'
+' Declare shared variables for task coordination and motion control
+DIM tLIdx%(4)                           ' Task iteration index for each robot (1-4)
+DIM rTIdx%(4)                           ' Current task position in task list for each robot
+DIM mSet%(2)                            ' Motion settings: [0]=AUTO speed, [1]=Program speed (%)
+DIM zPos(2)                             ' Z-axis levels (mm): [0]=Home, [1]=Approach, [2]=Operation
+DIM rPData%(4,199)                      ' Task data: [robot][0]=task count, [1-199]=task details
+DIM stPts%(4,0)                         ' Stamp point IDs: [robot][0]=stamp point
+DIM l1Pts%(4,1)                         ' Line point IDs: [robot][0]=start, [1]=end
+DIM rCTStart%(4)                        ' Cycle start time for each robot (seconds)
+DIM rCTEnd%(4)                          ' Cycle end time for each robot (seconds)
+DIM rCTTotal%(4)                        ' Total cycle time for each robot (seconds)
+DIM aPts%(4,2)                          ' Arc point IDs: [robot][0]=start, [1]=mid, [2]=end
+DIM cPts%(4,3)                          ' Circle point IDs: [robot][0-3]=circle points
+DIM l2Pts%(4,2)                         ' 2-line point IDs: [robot][0-2]=line points
+DIM l6Pts%(4,6)                         ' 6-line point IDs: [robot][0-6]=line points
+'
+' Subroutine: Execute stamp operation at specified point
+' Parameters: rId% (robot ID, 1-4), pId% (target point ID)
+' Notes: Moves to point, lowers and raises stamp cylinder; verify point ID is valid
+SUB *doStamp(rId%, pId%)
+'
+  MOVE [rId%] (1,2) P, P[pId%]          ' Move to target point on X-Y axes
+  WAIT ARM[rId%]                        ' Wait for robot to complete movement
+'
+  CALL*controlStampCylinder(rId%,0)     ' Lower stamp cylinder (dir=0)
+  CALL*controlStampCylinder(rId%,1)     ' Raise stamp cylinder (dir=1)
+'
+END SUB
+'
+' Subroutine: Draw a line between two points
+' Parameters: rId% (robot ID, 1-4), sPt% (start point ID), ePt% (end point ID)
+' Notes: Moves to start, lowers cylinder, draws line, raises cylinder; single iteration loop
+SUB *doLine(rId%, sPt%, ePt%)
+'
+  FOR idx% = sPt% TO ePt% STEP 2        ' Iterate over points (single iteration for one line)
+    MOVE [rId%] (1,2) P, P[idx%]        ' Move to start point on X-Y axes
+    WAIT ARM[rId%]                      ' Wait for robot to complete movement
+'
+    CALL*controlDrawCylinder(rId%,0)    ' Lower drawing cylinder (dir=0)
+    MOVE [rId%] (1,2) L, P[idx%], P[ePt%] ' Draw line from start to end point
+    WAIT ARM[rId%]                      ' Wait for line drawing to complete
+'
+    CALL*controlDrawCylinder(rId%,1)    ' Raise drawing cylinder (dir=1)
+  NEXT
+'
+END SUB
+'
+' Subroutine: Draw an arc through three points
+' Parameters: rId% (robot ID, 1-4), sPt% (start point ID), mPt% (mid point ID), ePt% (end point ID)
+' Notes: Moves to start, lowers cylinder, draws arc, raises cylinder; unused in current tasks
+SUB *doArc(rId%, sPt%, mPt%, ePt%)
+'
+  MOVE [rId%] (1,2) P, P[sPt%]          ' Move to arc start point on X-Y axes
+  WAIT ARM[rId%]                        ' Wait for robot to complete movement
+'
+  CALL*controlDrawCylinder(rId%,0)      ' Lower drawing cylinder (dir=0)
+  MOVE [rId%] (1,2) C, P[mPt%], P[ePt%] ' Draw arc through mid to end point
+  WAIT ARM[rId%]                        ' Wait for arc drawing to complete
+'
+  CALL*controlDrawCylinder(rId%,1)      ' Raise drawing cylinder (dir=1)
+'
+END SUB
+'
+' Subroutine: Draw a circle through four points
+' Parameters: rId% (robot ID, 1-4), pt1% to pt4% (point IDs)
+' Notes: Moves to first point, lowers cylinder, draws circle, raises cylinder; unused in current tasks
+SUB *doCircle(rId%, pt1%, pt2%, pt3%, pt4%)
+'
+  MOVE [rId%] (1,2) P, P[pt1%]          ' Move to circle start point on X-Y axes
+  WAIT ARM[rId%]                        ' Wait for robot to complete movement
+'
+  CALL*controlDrawCylinder(rId%,0)      ' Lower drawing cylinder (dir=0)
+  MOVE [rId%] (1,2) C, P[pt1%], P[pt2%], P[pt3%], P[pt4%] ' Draw circle through four points
+  WAIT ARM[rId%]                        ' Wait for circle drawing to complete
+'
+  CALL*controlDrawCylinder(rId%,1)      ' Raise drawing cylinder (dir=1)
+'
+END SUB
+'
+' Subroutine: Draw two connected lines
+' Parameters: rId% (robot ID, 1-4), pt1% to pt3% (point IDs)
+' Notes: Moves to first point, lowers cylinder, draws two lines, raises cylinder
+SUB *do2Line(rId%, pt1%, pt2%, pt3%)
+'
+  MOVE [rId%] (1,2) P, P[pt1%]          ' Move to first line start point on X-Y axes
+  WAIT ARM[rId%]                        ' Wait for robot to complete movement
+'
+  CALL*controlDrawCylinder(rId%,0)      ' Lower drawing cylinder (dir=0)
+  MOVE [rId%] (1,2) L, P[pt1%], P[pt2%] ' Draw first line segment
+  WAIT ARM[rId%]                        ' Wait for first line to complete
+'
+  MOVE [rId%] (1,2) L, P[pt2%], P[pt3%] ' Draw second line segment
+  WAIT ARM[rId%]                        ' Wait for second line to complete
+'
+  CALL*controlDrawCylinder(rId%,1)      ' Raise drawing cylinder (dir=1)
+'
+END SUB
+'
+' Subroutine: Draw six connected lines
+' Parameters: rId% (robot ID, 1-4), pt1% to pt7% (point IDs)
+' Notes: Moves to first point, lowers cylinder, draws six lines, raises cylinder
+SUB *do6Line(rId%, pt1%, pt2%, pt3%, pt4%, pt5%, pt6%, pt7%)
+'
+  MOVE [rId%] (1,2) P, P[pt1%]          ' Move to first line start point on X-Y axes
+  WAIT ARM[rId%]                        ' Wait for robot to complete movement
+'
+  CALL*controlDrawCylinder(rId%,0)      ' Lower drawing cylinder (dir=0)
+  MOVE [rId%] (1,2) L, P[pt1%], P[pt2%] ' Draw first line segment
+  WAIT ARM[rId%]                        ' Wait for first line to complete
+'
+  MOVE [rId%] (1,2) L, P[pt2%], P[pt3%] ' Draw second line segment
+  WAIT ARM[rId%]                        ' Wait for second line to complete
+'
+  MOVE [rId%] (1,2) L, P[pt3%], P[pt4%] ' Draw third line segment
+  WAIT ARM[rId%]                        ' Wait for third line to complete
+'
+  MOVE [rId%] (1,2) L, P[pt4%], P[pt5%] ' Draw fourth line segment
+  WAIT ARM[rId%]                        ' Wait for fourth line to complete
+'
+  MOVE [rId%] (1,2) L, P[pt5%], P[pt6%] ' Draw fifth line segment
+  WAIT ARM[rId%]                        ' Wait for fifth line to complete
+'
+  MOVE [rId%] (1,2) L, P[pt6%], P[pt7%] ' Draw sixth line segment
+  WAIT ARM[rId%]                        ' Wait for sixth line to complete
+'
+  CALL*controlDrawCylinder(rId%,1)      ' Raise drawing cylinder (dir=1)
+'
+END SUB
+'
+' Subroutine: Control stamp cylinder movement
+' Parameters: rId% (robot ID, 1-4), dir% (0=down, 1=up)
+' Notes: Activates stamp cylinder; uses delays for debugging (replace with WAIT SI2 for production)
+SUB *controlStampCylinder(rId%, dir%)
+'
+  IF dir% <> 0 AND dir% <> 1 THEN       ' Validate direction parameter (0=down, 1=up)
+    CALL*handleError(0)                 ' Log error for invalid direction
+    EXIT SUB                            ' Exit subroutine if direction is invalid
+  ENDIF
+'
+  SELECT rId%
+    CASE 1
+      IF dir% = 0 THEN                  ' Lower stamp cylinder for Robot 1
+        SO2(1,0) = &B01                 ' Set output to lower cylinder (bit 0=1)
+        'WAIT SI2(1,0) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for stamp quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise stamp cylinder for Robot 1
+        SO2(1,0) = &B10                 ' Set output to raise cylinder (bit 1=1)
+        'WAIT SI2(1,0) = &B10           ' Wait for sensor confirmation (uncomment for production)
+      ENDIF
+'
+    CASE 2
+      IF dir% = 0 THEN                  ' Lower stamp cylinder for Robot 2
+        SO2(3,2) = &B01                 ' Set output to lower cylinder (bit 2=1)
+        'WAIT SI2(3,2) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for stamp quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise stamp cylinder for Robot 2
+        SO2(3,2) = &B10                 ' Set output to raise cylinder (bit 3=1)
+        'WAIT SI2(3,2) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE 3
+      IF dir% = 0 THEN                  ' Lower stamp cylinder for Robot 3
+        SO2(5,4) = &B01                 ' Set output to lower cylinder (bit 4=1)
+        'WAIT SI2(5,4) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for stamp quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise stamp cylinder for Robot 3
+        SO2(5,4) = &B10                 ' Set output to raise cylinder (bit 5=1)
+        'WAIT SI2(5,4) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE 4
+      IF dir% = 0 THEN                  ' Lower stamp cylinder for Robot 4
+        SO2(7,6) = &B01                 ' Set output to lower cylinder (bit 6=1)
+        'WAIT SI2(7,6) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for stamp quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise stamp cylinder for Robot 4
+        SO2(7,6) = &B10                 ' Set output to raise cylinder (bit 7=1)
+        'WAIT SI2(7,6) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE ELSE
+      CALL*handleError(0)               ' Log error for invalid robot ID
+  END SELECT
+'
+END SUB
+'
+' Subroutine: Control drawing cylinder movement for lines, arcs, circles
+' Parameters: rId% (robot ID, 1-4), dir% (0=down, 1=up)
+' Notes: Activates drawing cylinder; uses delays for debugging (replace with WAIT SI3 for production)
+SUB *controlDrawCylinder(rId%, dir%)
+'
+  IF dir% <> 0 AND dir% <> 1 THEN       ' Validate direction parameter (0=down, 1=up)
+    CALL*handleError(0)                 ' Log error for invalid direction
+    EXIT SUB                            ' Exit subroutine if direction is invalid
+  ENDIF
+'
+  SELECT rId%
+    CASE 1
+      IF dir% = 0 THEN                  ' Lower drawing cylinder for Robot 1
+        SO3(1,0) = &B01                 ' Set output to lower cylinder (bit 0=1)
+        'WAIT SI3(1,0) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for drawing quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise drawing cylinder for Robot 1
+        SO3(1,0) = &B10                 ' Set output to raise cylinder (bit 1=1)
+        'WAIT SI3(1,0) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE 2
+      IF dir% = 0 THEN                  ' Lower drawing cylinder for Robot 2
+        SO3(3,2) = &B01                 ' Set output to lower cylinder (bit 2=1)
+        'WAIT SI3(3,2) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for drawing quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise drawing cylinder for Robot 2
+        SO3(3,2) = &B10                 ' Set output to raise cylinder (bit 3=1)
+        'WAIT SI3(3,2) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE 3
+      IF dir% = 0 THEN                  ' Lower drawing cylinder for Robot 3
+        SO3(5,4) = &B01                 ' Set output to lower cylinder (bit 4=1)
+        'WAIT SI3(5,4) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for drawing quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise drawing cylinder for Robot 3
+        SO3(5,4) = &B10                 ' Set output to raise cylinder (bit 5=1)
+        'WAIT SI3(5,4) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE 4
+      IF dir% = 0 THEN                  ' Lower drawing cylinder for Robot 4
+        SO3(7,6) = &B01                 ' Set output to lower cylinder (bit 6=1)
+        'WAIT SI3(7,6) = &B01           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+        DELAY 100                       ' Additional 100ms delay for drawing quality
+      ENDIF
+      IF dir% = 1 THEN                  ' Raise drawing cylinder for Robot 4
+        SO3(7,6) = &B10                 ' Set output to raise cylinder (bit 7=1)
+        'WAIT SI3(7,6) = &B10           ' Wait for sensor confirmation (uncomment for production)
+        DELAY 1000                      ' Temporary 1s delay for cylinder movement
+      ENDIF
+'
+    CASE ELSE
+      CALL*handleError(0)               ' Log error for invalid robot ID
+  END SELECT
+'
+END SUB
+'
+' Subroutine: Handle and log task errors to maintain system stability
+' Parameters: tId% (task number: 2-5 for robots 1-4, 0 for system errors)
+' Notes: Maps task ID to robot ID, logs error, and pauses robot if error occurs
+SUB *handleError(tId%)
+'
+  rId% = 0                              ' Initialize robot ID (default for invalid tasks)
+  IF tId% = 2 THEN rId% = 1             ' Map Task T2 to Robot 1
+  IF tId% = 3 THEN rId% = 2             ' Map Task T3 to Robot 2
+  IF tId% = 4 THEN rId% = 3             ' Map Task T4 to Robot 3
+  IF tId% = 5 THEN rId% = 4             ' Map Task T5 to Robot 4
+'
+  PRINT "Error on Task#", tId%, " (Robot#", rId%, "): ", ERR(tId%) ' Log error with task and robot details
+'
+  IF rId% >= 1 AND rId% <= 4 THEN       ' Check if robot ID is valid
+    IF ERR(tId%) <> 0 THEN              ' Proceed if an error exists
+      SELECT rId%
+        CASE 1
+          MO2(1) = 0                    ' Clear Robot 1 readiness flag to pause execution
+        CASE 2
+          MO2(2) = 0                    ' Clear Robot 2 readiness flag to pause execution
+        CASE 3
+          MO2(3) = 0                    ' Clear Robot 3 readiness flag to pause execution
+        CASE 4
+          MO2(4) = 0                    ' Clear Robot 4 readiness flag to pause execution
+      END SELECT
+    ENDIF
+  ELSE
+    PRINT "Invalid task number: ", tId% ' Log error for invalid task ID
+  ENDIF
+'
+END SUB
+NAME=MAIN
+PGN=3
+'-----------------------------------------------------------------------------------
+' File: MAIN.pmg
+' Purpose: Initializes 4-arm robot system, sets motion parameters, and coordinates tasks.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 13, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+PRINT "Starting 4-Arm Robotic System"    ' Log system startup for operator monitoring
+'
+' Configure servos and motion parameters for consistent robot movement
+FOR rId% = 1 TO 4                       ' Loop through Robots 1 to 4
+  SERVO[rId%] ON                        ' Enable servo for precise control
+  mSet%(0) = 100                        ' Set AUTO speed to 100% (full speed)
+  mSet%(1) = 100                        ' Set PROGRAM speed to 100% for tasks
+  ASPEED[rId%] mSet%(0)                 ' Apply acceleration speed to robot
+  SPEED[rId%] mSet%(1)                  ' Apply program speed to robot
+NEXT
+'
+' Define Z-axis positions for safe and operational movements (in mm)
+zPos(0) = 300.0                         ' Home height: Safe idle position
+zPos(1) = 0.0                           ' Approach height: Pre-task position (verify if safe)
+zPos(2) = 0.0                           ' Operation height: Task execution (unused; clarify purpose)
+'
+' Set Z-axis weight for motion dynamics (in kg)
+AXWGHT[1](3) = 3                        ' Robot 1 Z-axis payload weight
+AXWGHT[2](3) = 3                        ' Robot 2 Z-axis payload weight
+AXWGHT[3](3) = 3                        ' Robot 3 Z-axis payload weight
+AXWGHT[4](3) = 3                        ' Robot 4 Z-axis payload weight
+'
+' Launch tasks T2-T5 for Robots 1-4 in sequence
+START <RB1>, T2, 2                      ' Start Robot 1 task (T2)
+WAIT REFTSK(2)=1                        ' Wait for Robot 1 task initialization
+START <RB2>, T3, 3                      ' Start Robot 2 task (T3)
+WAIT REFTSK(3)=1                        ' Wait for Robot 2 task initialization
+START <RB3>, T4, 4                      ' Start Robot 3 task (T4)
+WAIT REFTSK(4)=1                        ' Wait for Robot 3 task initialization
+START <RB4>, T5, 5                      ' Start Robot 4 task (T5)
+WAIT REFTSK(5)=1                        ' Wait for Robot 4 task initialization
+'
+' Apply base shifts to align robot workspaces
+SHIFT[1] S1                             ' Robot 1: No offset (base position)
+SHIFT[2] S2                             ' Robot 2: Align workspace to system layout
+SHIFT[3] S3                             ' Robot 3: Adjust for workspace alignment
+SHIFT[4] S4                             ' Robot 4: Position adjustment for workspace
+'
+' Initialize hand configurations for task execution
+CHANGE[1] H11                           ' Robot 1: Use H1 for stamps (unused), H11 for lines
+CHANGE[2] H12                           ' Robot 2: Use H2 for stamps, H12 for lines
+CHANGE[3] H13                           ' Robot 3: Use H3 for stamps, H13 for lines
+CHANGE[4] H14                           ' Robot 4: Use H4 for stamps (unused), H14 for lines
+'
+' Assign starting points for robot task origins
+P1 = P101                               ' Robot 1: Start at point P101
+P2 = P117                               ' Robot 2: Start at point P117
+P3 = P131                               ' Robot 3: Start at point P131
+P4 = P155                               ' Robot 4: Start at point P155
+'
+' Initialize robots in sequence to prevent collisions
+DIM iSeq%(4)                            ' Array to define robot initialization order
+iSeq%(1) = 1                            ' First: Robot 1
+iSeq%(2) = 4                            ' Second: Robot 4
+iSeq%(3) = 2                            ' Third: Robot 2
+iSeq%(4) = 3                            ' Last: Robot 3
+FOR seqIdx% = 1 TO 4                    ' Loop through initialization sequence
+  rId% = iSeq%(seqIdx%)                ' Get robot ID from sequence
+  DRIVE[rId%] (3,zPos(1))                  ' Move Z-axis to approach height (zPos(1)=0.0 mm)
+  SELECT rId%
+    CASE 1
+      MOVE[rId%] (1, 2) P, P11          ' Move Robot 1 to safe point P11 (X-Y axes)
+    CASE 2
+      MOVE[rId%] (1, 2) P, P12          ' Move Robot 2 to safe point P12 (X-Y axes)
+    CASE 3
+      MOVE[rId%] (1, 2) P, P13          ' Move Robot 3 to safe point P13 (X-Y axes)
+    CASE 4
+      MOVE[rId%] (1, 2) P, P14          ' Move Robot 4 to safe point P14 (X-Y axes)
+  END SELECT
+  'DRIVE[rId%] (3, zPos(1))              ' Move Z-axis to approach height (commented; incomplete?)
+  'WAIT ARM[rId%]                        ' Wait for movement completion (commented; incomplete?)
+  tId% = rId% + 1                       ' Map robot ID to task ID (T2-T5)
+  IF ERR(tId%) <> 0 THEN CALL*handleError(tId%) ' Handle initialization errors
+NEXT
+'
+' Position robots at final start points in sequence
+iSeq%(1) = 2                            ' First: Robot 2
+iSeq%(2) = 3                            ' Second: Robot 3
+iSeq%(3) = 1                            ' Third: Robot 1
+iSeq%(4) = 4                            ' Last: Robot 4
+FOR seqIdx% = 1 TO 4                    ' Loop through final positioning sequence
+  rId% = iSeq%(seqIdx%)                ' Get robot ID from sequence
+  DRIVE[rId%] (3, zPos(1))                  ' Move Z-axis to approach height (zPos(1)=0.0 mm)
+  SELECT rId%
+    CASE 1
+      MOVE[rId%] (1, 2) P, P1           ' Move Robot 1 to origin P101 (X-Y axes)
+    CASE 2
+      MOVE[rId%] (1, 2) P, P2           ' Move Robot 2 to origin P117 (X-Y axes)
+    CASE 3
+      MOVE[rId%] (1, 2) P, P3           ' Move Robot 3 to origin P131 (X-Y axes)
+    CASE 4
+      MOVE[rId%] (1, 2) P, P4           ' Move Robot 4 to origin P155 (X-Y axes)
+  END SELECT
+  'DRIVE[rId%] (3, zPos(1))              ' Move Z-axis to approach height (commented; incomplete?)
+  'WAIT ARM[rId%]                        ' Wait for movement completion (commented; incomplete?)
+  tId% = rId% + 1                       ' Map robot ID to task ID (T2-T5)
+  IF ERR(tId%) <> 0 THEN CALL*handleError(tId%) ' Handle positioning errors
+NEXT
+'
+WAIT MO3(0) = 1                         ' Wait for system activation signal
+'
+' Main loop: Execute tasks until system is deactivated
+WHILE MO3(0) = 1                        ' Loop while system is active
+  SWI <MODEL001>                        ' Execute task configurations from MODEL001.pmg
+  IF ERR(0) <> 0 THEN CALL*handleError(0) ' Handle system-level errors
+WEND
+'
+HALTALL                                 ' Safely stop all robots and tasks
+NAME=RB1
+PGN=4
+'-----------------------------------------------------------------------------------
+' File: RB1.pmg
+' Purpose: Executes 7 tasks for Robot 1 (5 lines, 2 2-line) using points P101-P116.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 20, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+MO2(1) = 1                              ' Signal Robot 1 readiness for task synchronization
+rTIdx%(1) = 1                           ' Initialize task index to first task in rPData%(1,*)
+'
+WHILE -1                                ' Continuous loop until program is manually stopped
+  WAIT MO2(4,3,2,1) = &B0000            ' Wait for all robots (1-4) to signal readiness
+  IF ERR(2) <> 0 THEN CALL*handleError(2) ' Check for errors in Task T2; call error handler if detected
+'
+  rCTStart%(1)=TIMER                    ' Record start time for Robot 1 cycle (in seconds)
+  DRIVE[1] (3, zPos(0))                 ' Move Z-axis to safe home height (zPos(0)=345 mm)
+  FOR tLIdx%(1) = 1 TO rPData%(1, 0)    ' Iterate through Robot 1’s tasks (total in rPData%(1,0)=7)
+    SELECT rPData%(1, rTIdx%(1))        ' Select task type from task data array
+      CASE 1                            ' Task Type 1: Stamp at single point (unused in MODEL001)
+        stPts%(1,0) = rPData%(1, rTIdx%(1) + 1) ' Load stamp point ID
+        CHANGE[1] H1                    ' Switch to Hand H1 for stamping operation
+        CALL*doStamp(1,stPts%(1,0))     ' Execute stamp at specified point
+        rTIdx%(1) = rTIdx%(1) + 2       ' Advance task index to next task (skip point ID)
+'
+      CASE 2                            ' Task Type 2: Draw single line between two points
+        l1Pts%(1,0) = rPData%(1, rTIdx%(1) + 1) ' Load line start point ID (e.g., P101)
+        l1Pts%(1,1) = rPData%(1, rTIdx%(1) + 2) ' Load line end point ID (e.g., P102)
+        CHANGE[1] H11                   ' Switch to Hand H11 for line drawing
+        CALL*doLine(1,l1Pts%(1,0),l1Pts%(1,1)) ' Draw line from start to end point
+        rTIdx%(1) = rTIdx%(1) + 3       ' Advance task index (skip type and two points)
+'
+      CASE 3                            ' Task Type 3: Draw arc through three points (unused in MODEL001)
+        aPts%(1,0) = rPData%(1, rTIdx%(1) + 1) ' Load arc start point ID
+        aPts%(1,1) = rPData%(1, rTIdx%(1) + 2) ' Load arc mid point ID
+        aPts%(1,2) = rPData%(1, rTIdx%(1) + 3) ' Load arc end point ID
+        CHANGE[1] H11                   ' Switch to Hand H11 for arc drawing
+        CALL*doArc(1,aPts%(1,0),aPts%(1,1),aPts%(1,2)) ' Draw arc through points
+        rTIdx%(1) = rTIdx%(1) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 4                            ' Task Type 4: Draw circle through four points (unused in MODEL001)
+        cPts%(1,0) = rPData%(1, rTIdx%(1) + 1) ' Load circle point 1 ID
+        cPts%(1,1) = rPData%(1, rTIdx%(1) + 2) ' Load circle point 2 ID
+        cPts%(1,2) = rPData%(1, rTIdx%(1) + 3) ' Load circle point 3 ID
+        cPts%(1,3) = rPData%(1, rTIdx%(1) + 4) ' Load circle point 4 ID
+        CHANGE[1] H11                   ' Switch to Hand H11 for circle drawing
+        CALL*doCircle(1,cPts%(1,0),cPts%(1,1),cPts%(1,2),cPts%(1,3)) ' Draw circle
+        rTIdx%(1) = rTIdx%(1) + 5       ' Advance task index (skip type and four points)
+'
+      CASE 5                            ' Task Type 5: Draw two connected lines
+        l2Pts%(1,0) = rPData%(1, rTIdx%(1) + 1) ' Load 2-line point 1 ID (e.g., P111)
+        l2Pts%(1,1) = rPData%(1, rTIdx%(1) + 2) ' Load 2-line point 2 ID (e.g., P112)
+        l2Pts%(1,2) = rPData%(1, rTIdx%(1) + 3) ' Load 2-line point 3 ID (e.g., P113)
+        CHANGE[1] H11                   ' Switch to Hand H11 for 2-line drawing
+        CALL*do2Line(1,l2Pts%(1,0),l2Pts%(1,1),l2Pts%(1,2)) ' Draw two connected lines
+        rTIdx%(1) = rTIdx%(1) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 6                            ' Task Type 6: Draw six connected lines (unused in MODEL001)
+        l6Pts%(1,0) = rPData%(1, rTIdx%(1) + 1) ' Load 6-line point 1 ID
+        l6Pts%(1,1) = rPData%(1, rTIdx%(1) + 2) ' Load 6-line point 2 ID
+        l6Pts%(1,2) = rPData%(1, rTIdx%(1) + 3) ' Load 6-line point 3 ID
+        l6Pts%(1,3) = rPData%(1, rTIdx%(1) + 4) ' Load 6-line point 4 ID
+        l6Pts%(1,4) = rPData%(1, rTIdx%(1) + 5) ' Load 6-line point 5 ID
+        l6Pts%(1,5) = rPData%(1, rTIdx%(1) + 6) ' Load 6-line point 6 ID
+        l6Pts%(1,6) = rPData%(1, rTIdx%(1) + 7) ' Load 6-line point 7 ID
+        CHANGE[1] H11                   ' Switch to Hand H11 for 6-line drawing
+        CALL*do6Line(1,l6Pts%(1,0),l6Pts%(1,1),l6Pts%(1,2),l6Pts%(1,3),l6Pts%(1,4),l6Pts%(1,5),l6Pts%(1,6)) ' Draw six lines
+        rTIdx%(1) = rTIdx%(1) + 8       ' Advance task index (skip type and seven points)
+'
+      CASE ELSE
+        CALL*handleError(2)             ' Handle invalid task type; log error for Task T2
+    END SELECT
+'
+  NEXT
+'
+  DRIVE[1] (3, zPos(1))                 ' Move Z-axis to approach height (zPos(1)=0.0 mm; verify if safe)
+  MOVE[1] (1, 2) P, P1                  ' Move to Robot 1 origin (P101) on X-Y axes
+  WAIT ARM[1]                           ' Wait for Robot 1 to complete movement
+  MO2(1) = 1                            ' Signal Robot 1 task completion for synchronization
+  rTIdx%(1) = 1                         ' Reset task index for next cycle
+  rCTEnd%(1)=TIMER                      ' Record end time for Robot 1 cycle
+  rCTTotal%(1)=rCTEnd%(1)-rCTStart%(1)  ' Calculate total cycle time in seconds
+'
+WEND
+EXIT TASK                               ' Terminate Robot 1 task execution
+NAME=RB2
+PGN=5
+'-----------------------------------------------------------------------------------
+' File: RB2.pmg
+' Purpose: Executes 7 tasks for Robot 2 (3 lines, 2 stamps, 2 2-line) using points P117-P130.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 20, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+MO2(2) = 1                              ' Signal Robot 2 readiness for task synchronization
+rTIdx%(2) = 1                           ' Initialize task index to first task in rPData%(2,*)
+'
+WHILE -1                                ' Continuous loop until program is manually stopped
+  WAIT MO2(4,3,2,1) = &B0000            ' Wait for all robots (1-4) to signal readiness
+  IF ERR(3) <> 0 THEN CALL*handleError(3) ' Check for errors in Task T3; call error handler if detected
+'
+  rCTStart%(2)=TIMER                    ' Record start time for Robot 2 cycle (in seconds)
+  DRIVE[2] (3, zPos(0))                 ' Move Z-axis to safe home height (zPos(0)=345 mm)
+  FOR tLIdx%(2) = 1 TO rPData%(2, 0)    ' Iterate through Robot 2’s tasks (total in rPData%(2,0)=7)
+    SELECT rPData%(2, rTIdx%(2))        ' Select task type from task data array
+      CASE 1                            ' Task Type 1: Stamp at single point
+        stPts%(2,0) = rPData%(2, rTIdx%(2) + 1) ' Load stamp point ID (e.g., P121, P122)
+        CHANGE[2] H2                    ' Switch to Hand H2 for stamping operation
+        CALL*doStamp(2,stPts%(2,0))     ' Execute stamp at specified point
+        rTIdx%(2) = rTIdx%(2) + 2       ' Advance task index to next task (skip point ID)
+'
+      CASE 2                            ' Task Type 2: Draw single line between two points
+        l1Pts%(2,0) = rPData%(2, rTIdx%(2) + 1) ' Load line start point ID (e.g., P117)
+        l1Pts%(2,1) = rPData%(2, rTIdx%(2) + 2) ' Load line end point ID (e.g., P118)
+        CHANGE[2] H12                   ' Switch to Hand H12 for line drawing
+        CALL*doLine(2,l1Pts%(2,0),l1Pts%(2,1)) ' Draw line from start to end point
+        rTIdx%(2) = rTIdx%(2) + 3       ' Advance task index (skip type and two points)
+'
+      CASE 3                            ' Task Type 3: Draw arc through three points (unused in MODEL001)
+        aPts%(2,0) = rPData%(2, rTIdx%(2) + 1) ' Load arc start point ID
+        aPts%(2,1) = rPData%(2, rTIdx%(2) + 2) ' Load arc mid point ID
+        aPts%(2,2) = rPData%(2, rTIdx%(2) + 3) ' Load arc end point ID
+        CHANGE[2] H12                   ' Switch to Hand H12 for arc drawing
+        CALL*doArc(2,aPts%(2,0),aPts%(2,1),aPts%(2,2)) ' Draw arc through points
+        rTIdx%(2) = rTIdx%(2) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 4                            ' Task Type 4: Draw circle through four points (unused in MODEL001)
+        cPts%(2,0) = rPData%(2, rTIdx%(2) + 1) ' Load circle point 1 ID
+        cPts%(2,1) = rPData%(2, rTIdx%(2) + 2) ' Load circle point 2 ID
+        cPts%(2,2) = rPData%(2, rTIdx%(2) + 3) ' Load circle point 3 ID
+        cPts%(2,3) = rPData%(2, rTIdx%(2) + 4) ' Load circle point 4 ID
+        CHANGE[2] H12                   ' Switch to Hand H12 for circle drawing
+        CALL*doCircle(2,cPts%(2,0),cPts%(2,1),cPts%(2,2),cPts%(2,3)) ' Draw circle
+        rTIdx%(2) = rTIdx%(2) + 5       ' Advance task index (skip type and four points)
+'
+      CASE 5                            ' Task Type 5: Draw two connected lines
+        l2Pts%(2,0) = rPData%(2, rTIdx%(2) + 1) ' Load 2-line point 1 ID (e.g., P125)
+        l2Pts%(2,1) = rPData%(2, rTIdx%(2) + 2) ' Load 2-line point 2 ID (e.g., P126)
+        l2Pts%(2,2) = rPData%(2, rTIdx%(2) + 3) ' Load 2-line point 3 ID (e.g., P127)
+        CHANGE[2] H12                   ' Switch to Hand H12 for 2-line drawing
+        CALL*do2Line(2,l2Pts%(2,0),l2Pts%(2,1),l2Pts%(2,2)) ' Draw two connected lines
+        rTIdx%(2) = rTIdx%(2) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 6                            ' Task Type 6: Draw six connected lines (unused in MODEL001)
+        l6Pts%(2,0) = rPData%(2, rTIdx%(2) + 1) ' Load 6-line point 1 ID
+        l6Pts%(2,1) = rPData%(2, rTIdx%(2) + 2) ' Load 6-line point 2 ID
+        l6Pts%(2,2) = rPData%(2, rTIdx%(2) + 3) ' Load 6-line point 3 ID
+        l6Pts%(2,3) = rPData%(2, rTIdx%(2) + 4) ' Load 6-line point 4 ID
+        l6Pts%(2,4) = rPData%(2, rTIdx%(2) + 5) ' Load 6-line point 5 ID
+        l6Pts%(2,5) = rPData%(2, rTIdx%(2) + 6) ' Load 6-line point 6 ID
+        l6Pts%(2,6) = rPData%(2, rTIdx%(2) + 7) ' Load 6-line point 7 ID
+        CHANGE[2] H12                   ' Switch to Hand H12 for 6-line drawing
+        CALL*do6Line(2,l6Pts%(2,0),l6Pts%(2,1),l6Pts%(2,2),l6Pts%(2,3),l6Pts%(2,4),l6Pts%(2,5),l6Pts%(2,6)) ' Draw six lines
+        rTIdx%(2) = rTIdx%(2) + 8       ' Advance task index (skip type and seven points)
+'
+      CASE ELSE
+        CALL*handleError(3)             ' Handle invalid task type; log error for Task T3
+    END SELECT
+'
+  NEXT
+'
+  DRIVE[2] (3, zPos(1))                 ' Move Z-axis to approach height (zPos(1)=0.0 mm; verify if safe)
+  MOVE[2] (1, 2) P, P2                  ' Move to Robot 2 origin (P117) on X-Y axes
+  WAIT ARM[2]                           ' Wait for Robot 2 to complete movement
+  MO2(2) = 1                            ' Signal Robot 2 task completion for synchronization
+  rTIdx%(2) = 1                         ' Reset task index for next cycle
+  rCTEnd%(2)=TIMER                      ' Record end time for Robot 2 cycle
+  rCTTotal%(2)=rCTEnd%(2)-rCTStart%(2)  ' Calculate total cycle time in seconds
+'
+WEND
+EXIT TASK                               ' Terminate Robot 2 task execution
+NAME=RB3
+PGN=6
+'-----------------------------------------------------------------------------------
+' File: RB3.pmg
+' Purpose: Executes 8 tasks for Robot 3 (4 lines, 2 stamps, 2 6-line) using points P131-P154.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 20, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+MO2(3) = 1                              ' Signal Robot 3 readiness for task synchronization
+rTIdx%(3) = 1                           ' Initialize task index to first task in rPData%(3,*)
+'
+WHILE -1                                ' Continuous loop until program is manually stopped
+  WAIT MO2(4,3,2,1) = &B0000            ' Wait for all robots (1-4) to signal readiness
+  IF ERR(4) <> 0 THEN CALL*handleError(4) ' Check for errors in Task T4; call error handler if detected
+'
+  rCTStart%(3)=TIMER                    ' Record start time for Robot 3 cycle (in seconds)
+  DRIVE[3] (3, zPos(0))                 ' Move Z-axis to safe home height (zPos(0)=345 mm)
+  FOR tLIdx%(3) = 1 TO rPData%(3, 0)    ' Iterate through Robot 3’s tasks (total in rPData%(3,0)=8)
+    SELECT rPData%(3, rTIdx%(3))        ' Select task type from task data array
+      CASE 1                            ' Task Type 1: Stamp at single point
+        stPts%(3,0) = rPData%(3, rTIdx%(3) + 1) ' Load stamp point ID (e.g., P149, P150)
+        CHANGE[3] H3                    ' Switch to Hand H3 for stamping operation
+        CALL*doStamp(3,stPts%(3,0))     ' Execute stamp at specified point
+        rTIdx%(3) = rTIdx%(3) + 2       ' Advance task index to next task (skip point ID)
+'
+      CASE 2                            ' Task Type 2: Draw single line between two points
+        l1Pts%(3,0) = rPData%(3, rTIdx%(3) + 1) ' Load line start point ID (e.g., P145)
+        l1Pts%(3,1) = rPData%(3, rTIdx%(3) + 2) ' Load line end point ID (e.g., P146)
+        CHANGE[3] H13                   ' Switch to Hand H13 for line drawing
+        CALL*doLine(3,l1Pts%(3,0),l1Pts%(3,1)) ' Draw line from start to end point
+        rTIdx%(3) = rTIdx%(3) + 3       ' Advance task index (skip type and two points)
+'
+      CASE 3                            ' Task Type 3: Draw arc through three points (unused in MODEL001)
+        aPts%(3,0) = rPData%(3, rTIdx%(3) + 1) ' Load arc start point ID
+        aPts%(3,1) = rPData%(3, rTIdx%(3) + 2) ' Load arc mid point ID
+        aPts%(3,2) = rPData%(3, rTIdx%(3) + 3) ' Load arc end point ID
+        CHANGE[3] H13                   ' Switch to Hand H13 for arc drawing
+        CALL*doArc(3,aPts%(3,0),aPts%(3,1),aPts%(3,2)) ' Draw arc through points
+        rTIdx%(3) = rTIdx%(3) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 4                            ' Task Type 4: Draw circle through four points (unused in MODEL001)
+        cPts%(3,0) = rPData%(3, rTIdx%(3) + 1) ' Load circle point 1 ID
+        cPts%(3,1) = rPData%(3, rTIdx%(3) + 2) ' Load circle point 2 ID
+        cPts%(3,2) = rPData%(3, rTIdx%(3) + 3) ' Load circle point 3 ID
+        cPts%(3,3) = rPData%(3, rTIdx%(3) + 4) ' Load circle point 4 ID
+        CHANGE[3] H13                   ' Switch to Hand H13 for circle drawing
+        CALL*doCircle(3,cPts%(3,0),cPts%(3,1),cPts%(3,2),cPts%(3,3)) ' Draw circle
+        rTIdx%(3) = rTIdx%(3) + 5       ' Advance task index (skip type and four points)
+'
+      CASE 5                            ' Task Type 5: Draw two connected lines (unused in MODEL001)
+        l2Pts%(3,0) = rPData%(3, rTIdx%(3) + 1) ' Load 2-line point 1 ID
+        l2Pts%(3,1) = rPData%(3, rTIdx%(3) + 2) ' Load 2-line point 2 ID
+        l2Pts%(3,2) = rPData%(3, rTIdx%(3) + 3) ' Load 2-line point 3 ID
+        CHANGE[3] H13                   ' Switch to Hand H13 for 2-line drawing
+        CALL*do2Line(3,l2Pts%(3,0),l2Pts%(3,1),l2Pts%(3,2)) ' Draw two connected lines
+        rTIdx%(3) = rTIdx%(3) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 6                            ' Task Type 6: Draw six connected lines
+        l6Pts%(3,0) = rPData%(3, rTIdx%(3) + 1) ' Load 6-line point 1 ID (e.g., P131)
+        l6Pts%(3,1) = rPData%(3, rTIdx%(3) + 2) ' Load 6-line point 2 ID
+        l6Pts%(3,2) = rPData%(3, rTIdx%(3) + 3) ' Load 6-line point 3 ID
+        l6Pts%(3,3) = rPData%(3, rTIdx%(3) + 4) ' Load 6-line point 4 ID
+        l6Pts%(3,4) = rPData%(3, rTIdx%(3) + 5) ' Load 6-line point 5 ID
+        l6Pts%(3,5) = rPData%(3, rTIdx%(3) + 6) ' Load 6-line point 6 ID
+        l6Pts%(3,6) = rPData%(3, rTIdx%(3) + 7) ' Load 6-line point 7 ID (e.g., P137)
+        CHANGE[3] H13                   ' Switch to Hand H13 for 6-line drawing
+        CALL*do6Line(3,l6Pts%(3,0),l6Pts%(3,1),l6Pts%(3,2),l6Pts%(3,3),l6Pts%(3,4),l6Pts%(3,5),l6Pts%(3,6)) ' Draw six lines
+        rTIdx%(3) = rTIdx%(3) + 8       ' Advance task index (skip type and seven points)
+'
+      CASE ELSE
+        CALL*handleError(4)             ' Handle invalid task type; log error for Task T4
+    END SELECT
+'
+  NEXT
+'
+  DRIVE[3] (3, zPos(1))                 ' Move Z-axis to approach height (zPos(1)=0.0 mm; verify if safe)
+  MOVE[3] (1, 2) P, P3                  ' Move to Robot 3 origin (P131) on X-Y axes
+  WAIT ARM[3]                           ' Wait for Robot 3 to complete movement
+  MO2(3) = 1                            ' Signal Robot 3 task completion for synchronization
+  rTIdx%(3) = 1                         ' Reset task index for next cycle
+  rCTEnd%(3)=TIMER                      ' Record end time for Robot 3 cycle
+  rCTTotal%(3)=rCTEnd%(3)-rCTStart%(3)  ' Calculate total cycle time in seconds
+'
+WEND
+EXIT TASK                               ' Terminate Robot 3 task execution
+NAME=RB4
+PGN=7
+'-----------------------------------------------------------------------------------
+' File: RB4.pmg
+' Purpose: Executes 9 tasks for Robot 4 (8 lines, 1 2-line) using points P155-P173.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 20, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+MO2(4) = 1                              ' Signal Robot 4 readiness for task synchronization
+rTIdx%(4) = 1                           ' Initialize task index to first task in rPData%(4,*)
+'
+WHILE -1                                ' Continuous loop until program is manually stopped
+  WAIT MO2(4,3,2,1) = &B0000            ' Wait for all robots (1-4) to signal readiness
+  IF ERR(5) <> 0 THEN CALL*handleError(5) ' Check for errors in Task T5; call error handler if detected
+'
+  rCTStart%(4)=TIMER                    ' Record start time for Robot 4 cycle (in seconds)
+  DRIVE[4] (3, zPos(0))                 ' Move Z-axis to safe home height (zPos(0)=345 mm)
+  FOR tLIdx%(4) = 1 TO rPData%(4, 0)    ' Iterate through Robot 4’s tasks (total in rPData%(4,0)=9)
+    SELECT rPData%(4, rTIdx%(4))        ' Select task type from task data array
+      CASE 1                            ' Task Type 1: Stamp at single point (unused in MODEL001)
+        stPts%(4,0) = rPData%(4, rTIdx%(4) + 1) ' Load stamp point ID
+        CHANGE[4] H4                    ' Switch to Hand H4 for stamping operation
+        CALL*doStamp(4,stPts%(4,0))     ' Execute stamp at specified point
+        rTIdx%(4) = rTIdx%(4) + 2       ' Advance task index to next task (skip point ID)
+'
+      CASE 2                            ' Task Type 2: Draw single line between two points
+        l1Pts%(4,0) = rPData%(4, rTIdx%(4) + 1) ' Load line start point ID (e.g., P155)
+        l1Pts%(4,1) = rPData%(4, rTIdx%(4) + 2) ' Load line end point ID (e.g., P156)
+           CHANGE[4] H14                   ' Switch to Hand H14 for line drawing
+        CALL*doLine(4,l1Pts%(4,0),l1Pts%(4,1)) ' Draw line from start to end point
+        rTIdx%(4) = rTIdx%(4) + 3       ' Advance task index (skip type and two points)
+'
+      CASE 3                            ' Task Type 3: Draw arc through three points (unused in MODEL001)
+        aPts%(4,0) = rPData%(4, rTIdx%(4) + 1) ' Load arc start point ID
+        aPts%(4,1) = rPData%(4, rTIdx%(4) + 2) ' Load arc mid point ID
+        aPts%(4,2) = rPData%(4, rTIdx%(4) + 3) ' Load arc end point ID
+        CHANGE[4] H14                   ' Switch to Hand H14 for arc drawing
+        CALL*doArc(4,aPts%(4,0),aPts%(4,1),aPts%(4,2)) ' Draw arc through points
+        rTIdx%(4) = rTIdx%(4) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 4                            ' Task Type 4: Draw circle through four points (unused in MODEL001)
+        cPts%(4,0) = rPData%(4, rTIdx%(4) + 1) ' Load circle point 1 ID
+        cPts%(4,1) = rPData%(4, rTIdx%(4) + 2) ' Load circle point 2 ID
+        cPts%(4,2) = rPData%(4, rTIdx%(4) + 3) ' Load circle point 3 ID
+        cPts%(4,3) = rPData%(4, rTIdx%(4) + 4) ' Load circle point 4 ID
+        CHANGE[4] H14                   ' Switch to Hand H14 for circle drawing
+        CALL*doCircle(4,cPts%(4,0),cPts%(4,1),cPts%(4,2),cPts%(4,3)) ' Draw circle
+        rTIdx%(4) = rTIdx%(4) + 5       ' Advance task index (skip type and four points)
+'
+      CASE 5                            ' Task Type 5: Draw two connected lines
+        l2Pts%(4,0) = rPData%(4, rTIdx%(4) + 1) ' Load 2-line point 1 ID (e.g., P171)
+        l2Pts%(4,1) = rPData%(4, rTIdx%(4) + 2) ' Load 2-line point 2 ID (e.g., P172)
+        l2Pts%(4,2) = rPData%(4, rTIdx%(4) + 3) ' Load 2-line point 3 ID (e.g., P173)
+        CHANGE[4] H14                   ' Switch to Hand H14 for 2-line drawing
+        CALL*do2Line(4,l2Pts%(4,0),l2Pts%(4,1),l2Pts%(4,2)) ' Draw two connected lines
+        rTIdx%(4) = rTIdx%(4) + 4       ' Advance task index (skip type and three points)
+'
+      CASE 6                            ' Task Type 6: Draw six connected lines (unused in MODEL001)
+        l6Pts%(4,0) = rPData%(4, rTIdx%(4) + 1) ' Load 6-line point 1 ID
+        l6Pts%(4,1) = rPData%(4, rTIdx%(4) + 2) ' Load 6-line point 2 ID
+        l6Pts%(4,2) = rPData%(4, rTIdx%(4) + 3) ' Load 6-line point 3 ID
+        l6Pts%(4,3) = rPData%(4, rTIdx%(4) + 4) ' Load 6-line point 4 ID
+        l6Pts%(4,4) = rPData%(4, rTIdx%(4) + 5) ' Load 6-line point 5 ID
+        l6Pts%(4,5) = rPData%(4, rTIdx%(4) + 6) ' Load 6-line point 6 ID
+        l6Pts%(4,6) = rPData%(4, rTIdx%(4) + 7) ' Load 6-line point 7 ID
+        CHANGE[4] H14                   ' Switch to Hand H14 for 6-line drawing
+        CALL*do6Line(4,l6Pts%(4,0),l6Pts%(4,1),l6Pts%(4,2),l6Pts%(4,3),l6Pts%(4,4),l6Pts%(4,5),l6Pts%(4,6)) ' Draw six lines
+        rTIdx%(4) = rTIdx%(4) + 8       ' Advance task index (skip type and seven points)
+'
+      CASE ELSE
+        CALL*handleError(5)             ' Handle invalid task type; log error for Task T5
+    END SELECT
+'
+  NEXT
+'
+  DRIVE[4] (3, zPos(1))                 ' Move Z-axis to approach height (zPos(1)=0.0 mm; verify if safe)
+  MOVE[4] (1, 2) P, P4                  ' Move to Robot 4 origin (P155) on X-Y axes
+  WAIT ARM[4]                           ' Wait for Robot 4 to complete movement
+  MO2(4) = 1                            ' Signal Robot 4 task completion for synchronization
+  rTIdx%(4) = 1                         ' Reset task index for next cycle
+  rCTEnd%(4)=TIMER                      ' Record end time for Robot 4 cycle
+  rCTTotal%(4)=rCTEnd%(4)-rCTStart%(4)  ' Calculate total cycle time in seconds
+'
+WEND
+EXIT TASK                               ' Terminate Robot 4 task execution
+NAME=MODEL001
+PGN=8
+'-----------------------------------------------------------------------------------
+' File: MODEL001.pmg
+' Purpose: Configures 31 tasks for 4 robots (lines, stamps, multi-lines) using points P101-P173.
+' Version: 1.0
+' Author: Yamaha Robotics Team
+' Created: April 01, 2025
+' Last Modified: April 18, 2025
+' Contact: Mr. Samritd Susaisa-ad (Na), M.E. Technical Service Co., Ltd.
+' Email: samritd@metechnical.co.th
+' Website: www.metechnical.co.th
+'-----------------------------------------------------------------------------------
+'
+' Robot 1: Configure 7 tasks (5 lines, 2 2-line) using points P101-P116
+rPData%(1, 0) = 7                       ' Set total task count for Robot 1
+' Task format: [type=2, start, end] for lines; [type=5, pt1, pt2, pt3] for 2-line
+rPData%(1, 1) = 2                       ' Task 1: Line from P101 to P102
+rPData%(1, 2) = 101
+rPData%(1, 3) = 102
+rPData%(1, 4) = 2                       ' Task 2: Line from P103 to P104
+rPData%(1, 5) = 103
+rPData%(1, 6) = 104
+rPData%(1, 7) = 2                       ' Task 3: Line from P105 to P106
+rPData%(1, 8) = 105
+rPData%(1, 9) = 106
+rPData%(1, 10) = 2                      ' Task 4: Line from P107 to P108
+rPData%(1, 11) = 107
+rPData%(1, 12) = 108
+rPData%(1, 13) = 2                      ' Task 5: Line from P109 to P110
+rPData%(1, 14) = 109
+rPData%(1, 15) = 110
+rPData%(1, 16) = 5                      ' Task 6: 2-line from P111 to P112 to P113
+rPData%(1, 17) = 111
+rPData%(1, 18) = 112
+rPData%(1, 19) = 113
+rPData%(1, 20) = 5                      ' Task 7: 2-line from P114 to P115 to P116
+rPData%(1, 21) = 114
+rPData%(1, 22) = 115
+rPData%(1, 23) = 116
+'
+' Robot 2: Configure 7 tasks (3 lines, 2 stamps, 2 2-line) using points P117-P130
+rPData%(2, 0) = 7                       ' Set total task count for Robot 2
+' Task format: [type=2, start, end] for lines; [type=1, pt] for stamps; [type=5, pt1, pt2, pt3]
+rPData%(2, 1) = 2                       ' Task 1: Line from P117 to P118
+rPData%(2, 2) = 117
+rPData%(2, 3) = 118
+rPData%(2, 4) = 2                       ' Task 2: Line from P119 to P120
+rPData%(2, 5) = 119
+rPData%(2, 6) = 120
+rPData%(2, 7) = 1                       ' Task 3: Stamp at P121
+rPData%(2, 8) = 121
+rPData%(2, 9) = 1                       ' Task 4: Stamp at P122
+rPData%(2, 10) = 122
+rPData%(2, 11) = 2                      ' Task 5: Line from P123 to P124
+rPData%(2, 12) = 123
+rPData%(2, 13) = 124
+rPData%(2, 14) = 5                      ' Task 6: 2-line from P125 to P126 to P127
+rPData%(2, 15) = 125
+rPData%(2, 16) = 126
+rPData%(2, 17) = 127
+rPData%(2, 18) = 5                      ' Task 7: 2-line from P128 to P129 to P130
+rPData%(2, 19) = 128
+rPData%(2, 20) = 129
+rPData%(2, 21) = 130
+'
+' Robot 3: Configure 8 tasks (4 lines, 2 stamps, 2 6-line) using points P131-P154
+rPData%(3, 0) = 8                       ' Set total task count for Robot 3
+' Task format: [type=2, start, end] for lines; [type=1, pt] for stamps; [type=6, pt1..pt7]
+rPData%(3, 1) = 6                       ' Task 1: 6-line from P131 to P137
+rPData%(3, 2) = 131
+rPData%(3, 3) = 132
+rPData%(3, 4) = 133
+rPData%(3, 5) = 134
+rPData%(3, 6) = 135
+rPData%(3, 7) = 136
+rPData%(3, 8) = 137
+rPData%(3, 9) = 6                       ' Task 2: 6-line from P138 to P144
+rPData%(3, 10) = 138
+rPData%(3, 11) = 139
+rPData%(3, 12) = 140
+rPData%(3, 13) = 141
+rPData%(3, 14) = 142
+rPData%(3, 15) = 143
+rPData%(3, 16) = 144
+rPData%(3, 17) = 2                      ' Task 3: Line from P145 to P146
+rPData%(3, 18) = 145
+rPData%(3, 19) = 146
+rPData%(3, 20) = 2                      ' Task 4: Line from P147 to P148
+rPData%(3, 21) = 147
+rPData%(3, 22) = 148
+rPData%(3, 23) = 1                      ' Task 5: Stamp at P149
+rPData%(3, 24) = 149
+rPData%(3, 25) = 1                      ' Task 6: Stamp at P150
+rPData%(3, 26) = 150
+rPData%(3, 27) = 2                      ' Task 7: Line from P151 to P152
+rPData%(3, 28) = 151
+rPData%(3, 29) = 152
+rPData%(3, 30) = 2                      ' Task 8: Line from P153 to P154
+rPData%(3, 31) = 153
+rPData%(3, 32) = 154
+'
+' Robot 4: Configure 9 tasks (8 lines, 1 2-line) using points P155-P173
+rPData%(4, 0) = 9                       ' Set total task count for Robot 4
+' Task format: [type=2, start, end] for lines; [type=5, pt1, pt2, pt3]
+rPData%(4, 1) = 2                       ' Task 1: Line from P155 to P156
+rPData%(4, 2) = 155
+rPData%(4, 3) = 156
+rPData%(4, 4) = 2                       ' Task 2: Line from P157 to P158
+rPData%(4, 5) = 157
+rPData%(4, 6) = 158
+rPData%(4, 7) = 2                       ' Task 3: Line from P159 to P160
+rPData%(4, 8) = 159
+rPData%(4, 9) = 160
+rPData%(4, 10) = 2                      ' Task 4: Line from P161 to P162
+rPData%(4, 11) = 161
+rPData%(4, 12) = 162
+rPData%(4, 13) = 2                      ' Task 5: Line from P163 to P164
+rPData%(4, 14) = 163
+rPData%(4, 15) = 164
+rPData%(4, 16) = 2                      ' Task 6: Line from P165 to P166
+rPData%(4, 17) = 165
+rPData%(4, 18) = 166
+rPData%(4, 19) = 2                      ' Task 7: Line from P167 to P168
+rPData%(4, 20) = 167
+rPData%(4, 21) = 168
+rPData%(4, 22) = 2                      ' Task 8: Line from P169 to P170
+rPData%(4, 23) = 169
+rPData%(4, 24) = 170
+rPData%(4, 25) = 5                      ' Task 9: 2-line from P171 to P172 to P173
+rPData%(4, 26) = 171
+rPData%(4, 27) = 172
+rPData%(4, 28) = 173
+'
+' Summary of task distribution across robots
+' ---------------------------------------------
+' | Robot | Line | Stamp | 2-Line | 6-Line | Tot |
+' ---------------------------------------------
+' |   1   |   5  |   0   |   2    |   0    |  7  |
+' |   2   |   3  |   2   |   2    |   0    |  7  |
+' |   3   |   4  |   2   |   0    |   2    |  8  |
+' |   4   |   8  |   0   |   1    |   0    |  9  |
+' ---------------------------------------------
+' Total: 31 tasks, 73 points (P101-P173)
+'
+msg0$ = "All Robots: 31 Tasks, 73 Pts = " ' Message for system cycle time logging
+msg1$ = "Robot#1 Cycle Time = "           ' Message for Robot 1 cycle time
+msg2$ = "Robot#2 Cycle Time = "           ' Message for Robot 2 cycle time
+msg3$ = "Robot#3 Cycle Time = "           ' Message for Robot 3 cycle time
+msg4$ = "Robot#4 Cycle Time = "           ' Message for Robot 4 cycle time
+'
+WHILE MO3(0) = 1                        ' Loop while system is active
+  RESET TCOUNTER                        ' Reset system cycle timer
+  MO2(4,3,2,1) = &B0000                 ' Signal all robots to start tasks
+  WAIT MO2(4,3,2,1) = &B1111            ' Wait for all robots to complete tasks
+  PRINT msg0$, TCOUNTER, "ms"           ' Log total system cycle time in milliseconds
+  PRINT msg1$, rCTTotal%(1), "s"        ' Log Robot 1 cycle time in seconds
+  PRINT msg2$, rCTTotal%(2), "s"        ' Log Robot 2 cycle time in seconds
+  PRINT msg3$, rCTTotal%(3), "s"        ' Log Robot 3 cycle time in seconds
+  PRINT msg4$, rCTTotal%(4), "s"        ' Log Robot 4 cycle time in seconds
+  DELAY 2000                            ' Pause 2 seconds for monitoring (consider reducing)
+WEND
+'
+HALTALL                                 ' Safely stop all robots and tasks
+
+[PNT]
+P0=0.000 0.000 600.000 0.000 0.000 0.000 0 0 0
+P1=-1128.050 -25.570 785.500 0.000 0.000 0.000 0 0 0
+P2=-484.950 -0.570 785.500 0.000 0.000 0.000 0 0 0
+P3=130.730 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P4=778.050 70.000 785.500 0.000 0.000 0.000 0 0 0
+P6=1250.000 0.000 0.000 0.000 0.000 0.000 0 0 0
+P7=1000.000 0.000 0.000 0.000 0.000 0.000 0 0 0
+P8=1200.000 0.000 0.000 0.000 0.000 0.000 0 0 0
+P9=950.000 0.000 0.000 0.000 0.000 0.000 0 0 0
+P11=-1130.000 0.000 600.000 0.000 0.000 0.000 0 0 0
+P12=-750.000 0.000 600.000 0.000 0.000 0.000 0 0 0
+P13=750.000 0.000 600.000 0.000 0.000 0.000 0 0 0
+P14=1130.000 0.000 600.000 0.000 0.000 0.000 0 0 0
+P101=-1128.050 -25.570 785.500 0.000 0.000 0.000 0 0 0
+P102=-1128.050 24.430 785.500 0.000 0.000 0.000 0 0 0
+P103=-1077.390 69.430 785.500 0.000 0.000 0.000 0 0 0
+P104=-1114.890 69.430 785.500 0.000 0.000 0.000 0 0 0
+P105=-1057.390 -0.570 785.500 0.000 0.000 0.000 0 0 0
+P106=-1097.390 -0.570 785.500 0.000 0.000 0.000 0 0 0
+P107=-1077.390 -70.570 785.500 0.000 0.000 0.000 0 0 0
+P108=-1117.390 -70.570 785.500 0.000 0.000 0.000 0 0 0
+P109=-1077.390 -118.070 785.500 0.000 0.000 0.000 0 0 0
+P110=-1077.390 116.930 785.500 0.000 0.000 0.000 0 0 0
+P111=-860.160 33.430 785.500 0.000 0.000 0.000 0 0 0
+P112=-860.160 41.930 785.500 0.000 0.000 0.000 0 0 0
+P113=-851.660 41.930 785.500 0.000 0.000 0.000 0 0 0
+P114=-775.170 -34.570 785.500 0.000 0.000 0.000 0 0 0
+P115=-775.160 -43.070 785.500 0.000 0.000 0.000 0 0 0
+P116=-783.660 -43.070 785.500 0.000 0.000 0.000 0 0 0
+P117=-484.950 -0.570 785.500 0.000 0.000 0.000 0 0 0
+P118=-444.950 -0.570 785.500 0.000 0.000 0.000 0 0 0
+P119=-464.950 -180.560 785.500 0.000 0.000 0.000 0 0 0
+P120=-464.950 179.430 785.500 0.000 0.000 0.000 0 0 0
+P121=-459.950 49.430 785.500 0.000 0.000 0.000 0 0 0
+P122=-459.950 -50.570 785.500 0.000 0.000 0.000 0 0 0
+P123=-395.140 -25.570 785.500 0.000 0.000 0.000 0 0 0
+P124=-395.140 24.430 785.500 0.000 0.000 0.000 0 0 0
+P125=-3.190 59.110 785.500 0.000 0.000 0.000 0 0 0
+P126=-18.190 59.110 785.500 0.000 0.000 0.000 0 0 0
+P127=-18.190 74.110 785.500 0.000 0.000 0.000 0 0 0
+P128=-3.190 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P129=-18.190 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P130=-18.190 -74.110 785.500 0.000 0.000 0.000 0 0 0
+P131=130.730 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P132=145.880 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P133=145.880 -64.110 785.500 0.000 0.000 0.000 0 0 0
+P134=161.880 -64.110 785.500 0.000 0.000 0.000 0 0 0
+P135=161.880 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P136=251.810 -59.110 785.500 0.000 0.000 0.000 0 0 0
+P137=251.810 -74.110 785.500 0.000 0.000 0.000 0 0 0
+P138=130.730 59.110 785.500 0.000 0.000 0.000 0 0 0
+P139=145.880 59.110 785.500 0.000 0.000 0.000 0 0 0
+P140=145.880 64.110 785.500 0.000 0.000 0.000 0 0 0
+P141=161.880 64.110 785.500 0.000 0.000 0.000 0 0 0
+P142=161.880 59.110 785.500 0.000 0.000 0.000 0 0 0
+P143=251.810 59.110 785.500 0.000 0.000 0.000 0 0 0
+P144=251.810 74.110 785.500 0.000 0.000 0.000 0 0 0
+P145=358.050 0.000 785.500 0.000 0.000 0.000 0 0 0
+P146=318.050 0.000 785.500 0.000 0.000 0.000 0 0 0
+P147=338.050 -179.990 785.500 0.000 0.000 0.000 0 0 0
+P148=338.050 179.990 785.500 0.000 0.000 0.000 0 0 0
+P149=333.050 50.000 785.500 0.000 0.000 0.000 0 0 0
+P150=333.050 -50.000 785.500 0.000 0.000 0.000 0 0 0
+P151=558.050 0.000 785.500 0.000 0.000 0.000 0 0 0
+P152=518.050 0.000 785.500 0.000 0.000 0.000 0 0 0
+P153=538.050 -117.500 785.500 0.000 0.000 0.000 0 0 0
+P154=538.050 117.500 785.500 0.000 0.000 0.000 0 0 0
+P155=778.050 70.000 785.500 0.000 0.000 0.000 0 0 0
+P156=738.050 70.000 785.500 0.000 0.000 0.000 0 0 0
+P157=758.050 0.000 785.500 0.000 0.000 0.000 0 0 0
+P158=718.050 0.000 785.500 0.000 0.000 0.000 0 0 0
+P159=778.050 -70.000 785.500 0.000 0.000 0.000 0 0 0
+P160=738.050 -70.000 785.500 0.000 0.000 0.000 0 0 0
+P161=738.050 -117.500 785.500 0.000 0.000 0.000 0 0 0
+P162=738.050 117.500 785.500 0.000 0.000 0.000 0 0 0
+P163=870.250 -29.790 785.500 0.000 0.000 0.000 0 0 0
+P164=870.250 30.210 785.500 0.000 0.000 0.000 0 0 0
+P165=1088.050 75.000 785.500 0.000 0.000 0.000 0 0 0
+P166=1128.050 75.000 785.500 0.000 0.000 0.000 0 0 0
+P167=1088.050 81.000 785.500 0.000 0.000 0.000 0 0 0
+P168=1128.050 81.000 785.500 0.000 0.000 0.000 0 0 0
+P169=1088.050 87.450 785.500 0.000 0.000 0.000 0 0 0
+P170=1128.050 87.000 785.500 0.000 0.000 0.000 0 0 0
+P171=1103.050 69.000 785.500 0.000 0.000 0.000 0 0 0
+P172=1113.050 69.000 785.500 0.000 0.000 0.000 0 0 0
+P173=1113.050 97.000 785.500 0.000 0.000 0.000 0 0 0
+
+[PNM]
+PN6=RB1ORG
+PN7=RB2ORG
+PN8=RB3ORG
+PN9=RB4ORG
+
+[PRM]
+'C1:V3.01,R0454-V1.000-V1.14,R0020/V1.14,R0020
+'C2:V3.01,R0454-V1.000-V1.14,R0020/V1.14,R0020
+'C3:V3.01,R0454-V1.000-V1.14,R0020/V1.14,R0020
+'C4:V3.01,R0454-V1.000-V1.14,R0020/V1.14,R0020
+'C1:340,L,I,2.1MB,C6-35-32-1E-1E-45
+'C2:340,L,I,2.1MB,00-04-C6-00-00-01,1
+'C3:340,L,I,2.1MB,00-04-C6-00-00-02,2
+'C4:340,L,I,2.1MB,00-04-C6-00-00-03,3
+'C1:YCLnkE_M,V1.00////
+'C2:YCLnkE_S,V1.00///
+'C3:YCLnkE_S,V1.00///
+'C4:YCLnkE_S,V1.00///
+'PRM(0)
+\CNTTYP\
+C1=340
+C2=340
+C3=340
+C4=340
+\YCEADR\
+C1=0
+C2=1
+C3=2
+C4=3
+\DRVASGN\
+R1A=101,102,103,0,0,0
+R2A=201,202,203,0,0,0
+R3A=301,302,303,0,0,0
+R4A=401,402,403,0,0,0
+\RBTNUM\
+R1=3020
+R2=3020
+R3=3020
+R4=3020
+\AXSNUM\
+R1A=5020,5021,5520
+R2A=5020,5021,5520
+R3A=5020,5021,5520
+R4A=5020,5021,5520
+\ATTRIB\
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+\STACK\
+R1A=0,1,2
+R2A=0,1,2
+R3A=0,1,2
+R4A=0,1,2
+\CORDAT\
+R1A=1,2,3
+R2A=1,2,3
+R3A=1,2,3
+R4A=1,2,3
+'PRM(1)
+/INCMOD/
+RC=0
+/MOVIMD/
+RC=0
+/MOVTMD/
+RC=0
+/SRVOON/
+RC=0
+/SEQFLG/
+RC=0
+#SAFEMODE#
+RC=-1
+/RUNINOIC/
+RC=0
+/RSTATRUN/
+RC=0
+/RSTATBOT/
+RC=0
+/CRNTPG/
+RC=3
+/MAINPG/
+RC=3
+/STDPRN/
+RC=4
+#EMGTIM#
+RC=1000
+#EMGTIM2#
+RC=300
+/DBGSTAMD/
+RC=0
+/BRKSTPMD/
+RC=1
+/SFTONACO/
+RC=1
+/SFTONCRD/
+RC=3
+#CMPTIPRM#
+RC=0
+'PRM(2)
+/WEIGHT/
+R1=0
+R2=0
+R3=0
+R4=0
+/WEIGHTG/
+R1=0
+R2=0
+R3=0
+R4=0
+/ORGORD/
+R1=312456
+R2=312456
+R3=312456
+R4=312456
+/RORIEN/
+R1=0
+R2=0
+R3=0
+R4=0
+/ARMTYP/
+R1=0
+R2=0
+R3=0
+R4=0
+#CPVMAX#
+R1=750
+R2=750
+R3=750
+R4=750
+#CPACCL#
+R1=500
+R2=500
+R3=500
+R4=500
+/CPACRAT/
+R1=100
+R2=100
+R3=100
+R4=100
+#CPCMPCRV#
+R1=0
+R2=0
+R3=0
+R4=0
+#CPCMPVL#
+R1=500
+R2=500
+R3=500
+R4=500
+#ZONCTRL#
+R1=0
+R2=0
+R3=0
+R4=0
+#ZZONCTRL#
+R1=0
+R2=0
+R3=0
+R4=0
+/SCRINR/
+R1=0
+R2=0
+R3=0
+R4=0
+/INROFST/
+R1=0
+R2=0
+R3=0
+R4=0
+#SCRACC#
+R1=100
+R2=100
+R3=100
+R4=100
+#SCRVEL#
+R1=100
+R2=100
+R3=100
+R4=100
+#SCRRVEL#
+R1=100
+R2=100
+R3=100
+R4=100
+#MINRAD#
+R1=5000
+R2=5000
+R3=5000
+R4=5000
+#CERAD1#
+R1=30000
+R2=30000
+R3=30000
+R4=30000
+#CERAD2#
+R1=5000
+R2=5000
+R3=5000
+R4=5000
+#SPLMT1#
+R1=10
+R2=10
+R3=10
+R4=10
+#SPLMT2#
+R1=1
+R2=1
+R3=1
+R4=1
+#SCROPHR#
+R1=0
+R2=0
+R3=0
+R4=0
+#SCROVLR#
+R1=0
+R2=0
+R3=0
+R4=0
+#SCROVL#
+R1=5
+R2=5
+R3=5
+R4=5
+#CSTMRBT#
+R1=0
+R2=0
+R3=0
+R4=0
+\ASPEED\
+R1=100
+R2=100
+R3=100
+R4=100
+'PRM(3)
+/PLMT+/
+R1A=1802240,409600,573440
+R2A=1802240,409600,573440
+R3A=1802240,409600,573440
+R4A=1802240,409600,573440
+/PLMT-/
+R1A=-820,-820,-1639
+R2A=-820,-820,-1639
+R3A=-820,-820,-1639
+R4A=-820,-820,-1639
+/ACCEL/
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+/DECRAT/
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+/AXSTIP/
+R1A=0,0,3
+R2A=0,0,3
+R3A=0,0,3
+R4A=0,0,3
+/TOLE/
+R1A=80,80,80
+R2A=80,80,80
+R3A=80,80,80
+R4A=80,80,80
+/OUTPOS/
+R1A=2000,2000,2000
+R2A=2000,2000,2000
+R3A=2000,2000,2000
+R4A=2000,2000,2000
+/CONTPLS/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/ARCHP1/
+R1A=9999999,9999999,9999999
+R2A=9999999,9999999,9999999
+R3A=9999999,9999999,9999999
+R4A=9999999,9999999,9999999
+/ARCHP2/
+R1A=9999999,9999999,9999999
+R2A=9999999,9999999,9999999
+R3A=9999999,9999999,9999999
+R4A=9999999,9999999,9999999
+/PSHSPD/
+R1A=10,10,10
+R2A=10,10,10
+R3A=10,10,10
+R4A=10,10,10
+/PSHFRC/
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+/PSHTIME/
+R1A=1000,1000,1000
+R2A=1000,1000,1000
+R3A=1000,1000,1000
+R4A=1000,1000,1000
+/PSHJGSP/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/PSHMTD/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/MANACC/
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+/ORGVEL1/
+R1A=200,200,200
+R2A=200,200,200
+R3A=200,200,200
+R4A=200,200,200
+/ORGVEL2/
+R1A=50,50,50
+R2A=50,50,50
+R3A=50,50,50
+R4A=50,50,50
+/ORGMVS/
+R1A=20,20,20
+R2A=20,20,20
+R3A=20,20,20
+R4A=20,20,20
+/ORGMVP/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/ORGSFT/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/DOFSET/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/ORGMTD/
+R1A=2,2,2
+R2A=2,2,2
+R3A=2,2,2
+R4A=2,2,2
+/ORGDIR/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/MOTDIR/
+R1A=0,0,0
+R2A=0,0,0
+R3A=1,0,0
+R4A=1,0,0
+/SABSRCH/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/ARMLEN/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/OFFSET/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+/AXSWEI/
+R1A=20,20,7
+R2A=20,20,7
+R3A=20,20,7
+R4A=20,20,7
+/BFDNUM/
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+'PRM(4)
+#WTHBRK#
+R1A=0,0,1
+R2A=0,0,1
+R3A=0,0,1
+R4A=0,0,1
+#LSCLEN#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#LSCRNG#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ACCRAD#
+R1A=2779,3065,3701
+R2A=2779,3065,3701
+R3A=2779,3065,3701
+R4A=2779,3065,3701
+#DECRAD#
+R1A=2501,2758,3331
+R2A=2501,2758,3331
+R3A=2501,2758,3331
+R4A=2501,2758,3331
+#CMPCRV#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#CMPVEL#
+R1A=3000,3000,3000
+R2A=3000,3000,3000
+R3A=3000,3000,3000
+R4A=3000,3000,3000
+#ACCPTN#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DECPTN#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#VERDIR#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#VERACC#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ATLACL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ATLVCL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ATLJMR#
+R1A=10,10,10
+R2A=10,10,10
+R3A=10,10,10
+R4A=10,10,10
+#ATLVF#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KPPMOV#
+R1A=60,60,60
+R2A=60,60,60
+R3A=60,60,60
+R4A=60,60,60
+#KPP#
+R1A=73,73,60
+R2A=73,73,60
+R3A=73,73,60
+R4A=73,73,60
+#KPCHTM#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KFF#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KFFLPF#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KHFRQ1#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KHFRQ2#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KVP#
+R1A=1406,1406,844
+R2A=1406,1406,844
+R3A=1406,1406,844
+R4A=1406,1406,844
+#KVI#
+R1A=938,938,563
+R2A=938,938,563
+R3A=938,938,563
+R4A=938,938,563
+#KVRHLD#
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+#KVRPOS#
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+#KVCHTM#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#AL2DOF#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KVLLMT#
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+#KVRESV#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KVREEV#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#TRQFRQ#
+R1A=60,60,60
+R2A=60,60,60
+R3A=60,60,60
+R4A=60,60,60
+#TFRQHLD#
+R1A=60,60,60
+R2A=60,60,60
+R3A=60,60,60
+R4A=60,60,60
+#MF1TYP#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF1FRQ1#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF1FRQ2#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF2TYP#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF2FRQ1#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF2FRQ2#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF3TYP#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF3FRQ1#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF3FRQ2#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF4TYP#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF4FRQ1#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MF4FRQ2#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#OBSNMI#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#OBSGIN#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#OBSFF1#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#OBSFF2#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KIP#
+R1A=53,43,43
+R2A=53,43,43
+R3A=53,43,43
+R4A=53,43,43
+#KII#
+R1A=25,24,24
+R2A=25,24,24
+R3A=25,24,24
+R4A=25,24,24
+#KIF#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KILLMT#
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+#KIRESV#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KIREEV#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#VELLMT#
+R1A=3600,3600,3600
+R2A=3600,3600,3600
+R3A=3600,3600,3600
+R4A=3600,3600,3600
+#CRFSTD#
+R1A=150,90,90
+R2A=150,90,90
+R3A=150,90,90
+R4A=150,90,90
+#CRFLMT#
+R1A=420,240,240
+R2A=420,240,240
+R3A=420,240,240
+R4A=420,240,240
+#LEAD#
+R1A=20000,20000,10000
+R2A=20000,20000,10000
+R3A=20000,20000,10000
+R4A=20000,20000,10000
+#GEAR#
+R1A=1000,1000,1000
+R2A=1000,1000,1000
+R3A=1000,1000,1000
+R4A=1000,1000,1000
+#NMOTOR#
+R1A=254,252,252
+R2A=254,252,252
+R3A=254,252,252
+R4A=254,252,252
+#MTRTYP#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ENCTYP#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ENCPLS#
+R1A=16384,16384,16384
+R2A=16384,16384,16384
+R3A=16384,16384,16384
+R4A=16384,16384,16384
+#MPTYPE#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MPPTCH#
+R1A=4096,4096,4096
+R2A=4096,4096,4096
+R3A=4096,4096,4096
+R4A=4096,4096,4096
+#IS#
+R1A=150,90,90
+R2A=150,90,90
+R3A=150,90,90
+R4A=150,90,90
+#IP#
+R1A=420,240,240
+R2A=420,240,240
+R3A=420,240,240
+R4A=420,240,240
+#KT#
+R1A=480,410,410
+R2A=480,410,410
+R3A=480,410,410
+R4A=480,410,410
+#RP#
+R1A=247,480,480
+R2A=247,480,480
+R3A=247,480,480
+R4A=247,480,480
+#LP#
+R1A=90,137,137
+R2A=90,137,137
+R3A=90,137,137
+R4A=90,137,137
+#JM#
+R1A=240,160,160
+R2A=240,160,160
+R3A=240,160,160
+R4A=240,160,160
+#CTTYPE#
+R1A=1,0,0
+R2A=1,0,0
+R3A=1,0,0
+R4A=1,0,0
+#PWMFRQ#
+R1A=13,13,13
+R2A=13,13,13
+R3A=13,13,13
+R4A=13,13,13
+#IDLIMT#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#IDSTVL#
+R1A=3500,3800,3800
+R2A=3500,3800,3800
+R3A=3500,3800,3800
+R4A=3500,3800,3800
+#IDEDVL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#ORGACC#
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+#ORGCUR#
+R1A=420,240,240
+R2A=420,240,240
+R3A=420,240,240
+R4A=420,240,240
+#ORGDVEL#
+R1A=20,20,20
+R2A=20,20,20
+R3A=20,20,20
+R4A=20,20,20
+#ORGTIM#
+R1A=200,200,200
+R2A=200,200,200
+R3A=200,200,200
+R4A=200,200,200
+#ORGRTP#
+R1A=0,0,1
+R2A=0,0,1
+R3A=0,0,1
+R4A=0,0,1
+#ORGPHS#
+R1A=1,1,1
+R2A=1,1,1
+R3A=1,1,1
+R4A=1,1,1
+#DOGLEN#
+R1A=200000,200000,200000
+R2A=200000,200000,200000
+R3A=200000,200000,200000
+R4A=200000,200000,200000
+#POLSFT#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#POLLVL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#EMGMOD#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#EMGACC#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DUALMOD#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DUALDIR#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DUALORG#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DSLVPOS#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KDVP#
+R1A=10,10,10
+R2A=10,10,10
+R3A=10,10,10
+R4A=10,10,10
+#KDPP#
+R1A=10,10,10
+R2A=10,10,10
+R3A=10,10,10
+R4A=10,10,10
+#KDPHLD#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#KDPCHT#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#PTPCTRL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#PTPCHG#
+R1A=200,200,200
+R2A=200,200,200
+R3A=200,200,200
+R4A=200,200,200
+#RCKPLS#
+R1A=20,20,20
+R2A=20,20,20
+R3A=20,20,20
+R4A=20,20,20
+#MINVEL#
+R1A=15,15,15
+R2A=15,15,15
+R3A=15,15,15
+R4A=15,15,15
+#PVBRK#
+R1A=2,2,2
+R2A=2,2,2
+R3A=2,2,2
+R4A=2,2,2
+#QPBAND#
+R1A=200,200,200
+R2A=200,200,200
+R3A=200,200,200
+R4A=200,200,200
+#SRVDTM#
+R1A=100,100,100
+R2A=100,100,100
+R3A=100,100,100
+R4A=100,100,100
+#BKDLTM#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#BKONTM#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#BKOFTM#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MBRKVL#
+R1A=2000,2000,2000
+R2A=2000,2000,2000
+R3A=2000,2000,2000
+R4A=2000,2000,2000
+#MOLCRT#
+R1A=150,90,90
+R2A=150,90,90
+R3A=150,90,90
+R4A=150,90,90
+#MOLTIM#
+R1A=300,300,300
+R2A=300,300,300
+R3A=300,300,300
+R4A=300,300,300
+#MOLVEL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MOLMLT#
+R1A=28,27,27
+R2A=28,27,27
+R3A=28,27,27
+R4A=28,27,27
+#MOLSTDVEL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MOLVELCEF#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DOLCRT#
+R1A=1200,600,600
+R2A=1200,600,600
+R3A=1200,600,600
+R4A=1200,600,600
+#DOLTIM#
+R1A=10,10,10
+R2A=10,10,10
+R3A=10,10,10
+R4A=10,10,10
+#DOLVEL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#DOLMLT#
+R1A=28,28,28
+R2A=28,28,28
+R3A=28,28,28
+R4A=28,28,28
+#OVRCRT#
+R1A=504,288,288
+R2A=504,288,288
+R3A=504,288,288
+R4A=504,288,288
+#OCWTIM#
+R1A=2,2,2
+R2A=2,2,2
+R3A=2,2,2
+R4A=2,2,2
+#CERLVL#
+R1A=252,144,144
+R2A=252,144,144
+R3A=252,144,144
+R4A=252,144,144
+#CERTIM#
+R1A=2,2,2
+R2A=2,2,2
+R3A=2,2,2
+R4A=2,2,2
+#OVRVEL#
+R1A=3960,3960,3960
+R2A=3960,3960,3960
+R3A=3960,3960,3960
+R4A=3960,3960,3960
+#OVLTIM#
+R1A=2,2,2
+R2A=2,2,2
+R3A=2,2,2
+R4A=2,2,2
+#VERLVL#
+R1A=1980,1980,1980
+R2A=1980,1980,1980
+R3A=1980,1980,1980
+R4A=1980,1980,1980
+#VERTIM#
+R1A=3,3,3
+R2A=3,3,3
+R3A=3,3,3
+R4A=3,3,3
+#PERLVL#
+R1A=23068,23068,23068
+R2A=23068,23068,23068
+R3A=23068,23068,23068
+R4A=23068,23068,23068
+#PERTIM#
+R1A=3,3,3
+R2A=3,3,3
+R3A=3,3,3
+R4A=3,3,3
+#DPERLVL#
+R1A=16384,16384,16384
+R2A=16384,16384,16384
+R3A=16384,16384,16384
+R4A=16384,16384,16384
+#DPERTIM#
+R1A=3,3,3
+R2A=3,3,3
+R3A=3,3,3
+R4A=3,3,3
+#COLVEL#
+R1A=5,5,5
+R2A=5,5,5
+R3A=5,5,5
+R4A=5,5,5
+#COLTIM#
+R1A=50,50,50
+R2A=50,50,50
+R3A=50,50,50
+R4A=50,50,50
+#DRVCTRL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#VLCNMSPD#
+R1A=20,20,20
+R2A=20,20,20
+R3A=20,20,20
+R4A=20,20,20
+#VLCNSVL#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#MVLCNTRT#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#BFDDST#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#BFDTM1#
+R1A=15,15,15
+R2A=15,15,15
+R3A=15,15,15
+R4A=15,15,15
+#BFDTM2#
+R1A=10,10,10
+R2A=10,10,10
+R3A=10,10,10
+R4A=10,10,10
+#BFDAVE#
+R1A=3,3,3
+R2A=3,3,3
+R3A=3,3,3
+R4A=3,3,3
+#BFDTHR#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+#BFDFLT#
+R1A=40,40,40
+R2A=40,40,40
+R3A=40,40,40
+R4A=40,40,40
+#BFDPR1#
+R1A=12,12,12
+R2A=12,12,12
+R3A=12,12,12
+R4A=12,12,12
+#BFDPR2#
+R1A=7,7,7
+R2A=7,7,7
+R3A=7,7,7
+R4A=7,7,7
+#BFDPR3#
+R1A=5,5,5
+R2A=5,5,5
+R3A=5,5,5
+R4A=5,5,5
+#CSTMAXS#
+R1A=0,0,0
+R2A=0,0,0
+R3A=0,0,0
+R4A=0,0,0
+'PRM(5)
+/EMGCDO/
+RC=1
+/ERPORT/
+RC=0
+/BTALRM/
+RC=0
+/RESCDO/
+RC=0
+/IOORGOUT/
+RC=0
+/IOSRVOUT/
+RC=0
+'PRM(6)
+/OPTENBL/
+C1O=1,1,1,1
+'PRM(7)
+'PRM(8)
+'PRM(9)
+'PRM(10)
+'PRM(11)
+'PRM(12)
+/WCMODE/
+RC=0
+/WCSTRK/
+RC=9999999
+/WCRBT1/
+RC=0
+/WCAXS1/
+RC=0
+/WCRBT2/
+RC=0
+/WCAXS2/
+RC=0
+'PRM(13)
+/PCVLIC0/
+RC=808464432
+/PCVLIC1/
+RC=808464432
+/PCVLIC2/
+RC=808464432
+/PCVLIC3/
+RC=808464432
+/PCVLIC4/
+RC=808464432
+/PCVENBL/
+RC=0
+'PRM(14)
+
+[SFT]
+S1=1250.000 250.000 0.000 0.000
+SP1=0.000 0.000 0.000 0.000
+SM1=0.000 0.000 0.000 0.000
+S2=1000.000 250.000 0.000 0.000
+SP2=0.000 0.000 0.000 0.000
+SM2=0.000 0.000 0.000 0.000
+S3=1200.000 250.000 0.000 0.000
+SP3=0.000 0.000 0.000 0.000
+SM3=0.000 0.000 0.000 0.000
+S4=950.000 250.000 0.000 0.000
+SP4=0.000 0.000 0.000 0.000
+SM4=0.000 0.000 0.000 0.000
+
+[HND]
+H1=1,65.000,40.000,485.500
+H2=2,65.000,40.000,485.500
+H3=3,-65.000,-40.000,485.500
+H4=4,-65.000,-40.000,485.500
+H11=1,115.000,-40.000,485.500
+H12=2,115.000,-40.000,485.500
+H13=3,-115.000,40.000,485.500
+H14=4,-115.000,40.000,485.500
+
+[END]
